@@ -133,6 +133,8 @@ input,textarea{font-family:inherit;color:var(--text)}
 .ly-cur{font-family:var(--font-lyric);font-size:30px;font-weight:600;color:var(--amber-hi);text-shadow:0 0 26px rgba(var(--amber-rgb),.35)}
 .ly-spin{display:inline-block;width:14px;height:14px;margin-right:8px;border:2px solid rgba(var(--amber-rgb),.25);border-top-color:var(--amber);border-radius:50%;animation:lyspin .8s linear infinite;vertical-align:-2px}
 @keyframes lyspin{to{transform:rotate(360deg)}}
+.ly-retry{margin-top:12px;padding:8px 22px;border:1px solid var(--amber);color:var(--amber-hi);background:rgba(var(--amber-rgb),.08);border-radius:999px;font-size:14px;cursor:pointer}
+.ly-retry:active{background:rgba(var(--amber-rgb),.18)}
 .ly-empty{font-size:15px;color:var(--text-2);line-height:1.8}
 .ly-click{cursor:pointer}
 
@@ -304,7 +306,7 @@ const storeDel=(st,k)=>new Promise((res,rej)=>{const t=db.transaction(st,'readwr
 const storeGetAll=(st)=>new Promise((res,rej)=>{const r=db.transaction(st).objectStore(st).getAll();r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
 
 /* ============ 状态 ============ */
-const state={songs:[],order:[],idx:-1,playing:false,mode:'list',volume:0.7,muted:false,lyrics:null,lyIdx:-1,editingId:null,coverUrls:{},lyricSrc:null,onlineTrying:false};
+const state={songs:[],order:[],idx:-1,playing:false,mode:'list',volume:0.7,muted:false,lyrics:null,lyIdx:-1,editingId:null,coverUrls:{},lyricSrc:null,onlineTrying:false,onlineFailed:false};
 const HUES=[[24,30,42],[66,38,42],[34,46,40],[46,40,60],[28,46,56],[52,40,34],[24,42,46]];
 
 /* ============ 主题氛围色 ============ */
@@ -407,44 +409,51 @@ function setNowPlaying(s){
 async function loadLyric(songId){
   const s=state.songs.find(x=>x.id===songId);
   const ly=await storeGet('lyrics',songId);
-  if(ly&&ly.text){state.lyrics=parseLRC(ly.text);state.lyricSrc='local';state.onlineTrying=false;renderLyric();return;}
-  state.lyrics=null;state.lyricSrc=null;state.onlineTrying=false;
+  if(ly&&ly.text){state.lyrics=parseLRC(ly.text);state.lyricSrc='local';state.onlineTrying=false;state.onlineFailed=false;renderLyric();return;}
+  state.lyrics=null;state.lyricSrc=null;state.onlineTrying=false;state.onlineFailed=false;
   renderLyric();
   if(s&&((s.title&&s.title.trim())||(s.artist&&s.artist.trim()))){
     state.onlineTrying=true;renderLyric();
     const txt=await fetchOnlineLyric(s.title,s.artist);
     state.onlineTrying=false;
-    if(txt){await storePut('lyrics',{songId,text:txt});state.lyrics=parseLRC(txt);state.lyricSrc='online';}
+    if(txt){await storePut('lyrics',{songId,text:txt});state.lyrics=parseLRC(txt);state.lyricSrc='online';state.onlineFailed=false;}
+    else{state.onlineFailed=true;}
     renderLyric();
   }
 }
+async function jget(url,ms){const c=new AbortController();const to=setTimeout(()=>c.abort(),ms);try{const r=await fetch(url,{signal:c.signal});if(!r.ok)return null;return await r.json();}catch(e){return null;}finally{clearTimeout(to);}}
+async function tget(url,ms){const c=new AbortController();const to=setTimeout(()=>c.abort(),ms);try{const r=await fetch(url,{signal:c.signal});if(!r.ok)return null;return await r.text();}catch(e){return null;}finally{clearTimeout(to);}}
 async function fetchOnlineLyric(title,artist){
-  const ac=typeof AbortController!=='undefined'?new AbortController():null;
-  const to=setTimeout(()=>ac&&ac.abort(),9000);
+  const kw=((title||'').trim())+(artist&&artist.trim()&&artist.trim()!=='未知艺术家'?' '+(artist.trim()):'');
+  if(!kw.trim())return null;
+  const K=encodeURIComponent(kw.trim());
+  const t=(title||'').trim();
+  const metingHosts=['https://api.i-meto.com/meting/api','https://meting.qjqq.cn/api'];
+  for(const host of metingHosts){
+    try{
+      const arr=await jget(host+'?server=netease&type=search&id='+K,7000);
+      if(!Array.isArray(arr)||!arr.length)continue;
+      const nonCover=arr.filter(it=>!/cover/i.test((it.title||'')+' '+(it.author||'')));
+      let best=null;
+      for(const it of nonCover){const itt=(it.title||'').trim();if(itt===t||itt.startsWith(t)){best=it;break;}}
+      if(!best)best=nonCover[0]||arr[0];
+      if(!best||!best.lrc)continue;
+      const txt=await tget(best.lrc,7000);
+      if(txt&&parseLRC(txt).items.length)return txt;
+    }catch(e){}
+  }
   try{
-    const kw=encodeURIComponent(((title||'').trim())+(artist&&artist.trim()&&artist.trim()!=='未知艺术家'?' '+(artist.trim()):''));
-    if(!kw)return null;
-    const base='https://api.i-meto.com/meting/api';
-    const res=await fetch(base+'?server=netease&type=search&id='+kw,{signal:ac?ac.signal:undefined});
-    if(!res.ok)return null;
-    const arr=await res.json();
-    if(!Array.isArray(arr)||!arr.length)return null;
-    const t=(title||'').trim();
-    let best=null;
-    const nonCover=[...arr].filter(it=>!/cover/i.test((it.title||'')+' '+(it.author||'')));
-    for(const it of nonCover){
-      const itt=(it.title||'').trim();
-      if(itt===t||itt.startsWith(t)){best=it;break;}
+    const data=await jget('https://neteasecloudmusicapi.vercel.app/search?keywords='+K+'&limit=5',7000);
+    const songs=data&&data.result&&data.result.songs;
+    if(Array.isArray(songs)&&songs.length){
+      let sid=songs[0].id;
+      if(t){const hit=songs.find(s=>s.name===t)||songs.find(s=>s.name&&s.name.indexOf(t)>=0);if(hit)sid=hit.id;}
+      const ly=await jget('https://neteasecloudmusicapi.vercel.app/lyric?id='+sid,7000);
+      const lrc=ly&&ly.lrc&&ly.lrc.lyric;
+      if(lrc&&parseLRC(lrc).items.length)return lrc;
     }
-    if(!best)best=nonCover[0]||arr[0];
-    if(!best||!best.lrc)return null;
-    const r2=await fetch(best.lrc,{signal:ac?ac.signal:undefined});
-    if(!r2.ok)return null;
-    const txt=await r2.text();
-    if(!parseLRC(txt).items.length)return null;
-    return txt;
-  }catch(e){return null;}
-  finally{clearTimeout(to);}
+  }catch(e){}
+  return null;
 }
 audio.addEventListener('loadedmetadata',()=>{
   const s=state.songs[state.idx];if(s&&s.dur!==audio.duration){s.dur=audio.duration;storePut('songs',s);renderList();}
@@ -489,8 +498,12 @@ function renderLyric(){
   if(!ly||!ly.items.length){
     if(state.onlineTrying){
       box.innerHTML=`<div class="ly ly-empty"><span class="ly-spin"></span>正在联网搜索歌词…</div>`;
+    }else if(state.onlineFailed){
+      box.innerHTML=`<div class="ly ly-empty">联网歌词获取失败。<br><button class="ly-retry">点此重试</button></div>`;
+      const rb=box.querySelector('.ly-retry');
+      if(rb)rb.addEventListener('click',()=>{if(state.idx>=0)loadLyric(state.songs[state.idx].id);});
     }else{
-      box.innerHTML=`<div class="ly ly-empty">暂无歌词（联网未找到或离线）。<br>可回曲库点歌曲“编辑”手动添加 .lrc 歌词。</div>`;
+      box.innerHTML=`<div class="ly ly-empty">暂无歌词（离线或未找到）。<br>可回曲库点歌曲“编辑”手动添加 .lrc 歌词。</div>`;
     }
     return;
   }

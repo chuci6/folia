@@ -131,6 +131,8 @@ input,textarea{font-family:inherit;color:var(--text)}
 .ly{line-height:1.35;transition:color .35s ease,font-size .35s ease,opacity .35s ease;padding:2px 6px;word-break:break-word}
 .ly-prev,.ly-next{font-size:17px;color:var(--text-2);opacity:.55}
 .ly-cur{font-family:var(--font-lyric);font-size:30px;font-weight:600;color:var(--amber-hi);text-shadow:0 0 26px rgba(var(--amber-rgb),.35)}
+.ly-spin{display:inline-block;width:14px;height:14px;margin-right:8px;border:2px solid rgba(var(--amber-rgb),.25);border-top-color:var(--amber);border-radius:50%;animation:lyspin .8s linear infinite;vertical-align:-2px}
+@keyframes lyspin{to{transform:rotate(360deg)}}
 .ly-empty{font-size:15px;color:var(--text-2);line-height:1.8}
 .ly-click{cursor:pointer}
 
@@ -302,7 +304,7 @@ const storeDel=(st,k)=>new Promise((res,rej)=>{const t=db.transaction(st,'readwr
 const storeGetAll=(st)=>new Promise((res,rej)=>{const r=db.transaction(st).objectStore(st).getAll();r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
 
 /* ============ 状态 ============ */
-const state={songs:[],order:[],idx:-1,playing:false,mode:'list',volume:0.7,muted:false,lyrics:null,lyIdx:-1,editingId:null,coverUrls:{}};
+const state={songs:[],order:[],idx:-1,playing:false,mode:'list',volume:0.7,muted:false,lyrics:null,lyIdx:-1,editingId:null,coverUrls:{},lyricSrc:null,onlineTrying:false};
 const HUES=[[24,30,42],[66,38,42],[34,46,40],[46,40,60],[28,46,56],[52,40,34],[24,42,46]];
 
 /* ============ 主题氛围色 ============ */
@@ -394,10 +396,46 @@ function setNowPlaying(s){
   else{setAmbient(hueFor(s.id));}
 }
 async function loadLyric(songId){
+  const s=state.songs.find(x=>x.id===songId);
   const ly=await storeGet('lyrics',songId);
-  if(ly&&ly.text){state.lyrics=parseLRC(ly.text);}
-  else{state.lyrics=null;}
+  if(ly&&ly.text){state.lyrics=parseLRC(ly.text);state.lyricSrc='local';state.onlineTrying=false;renderLyric();return;}
+  state.lyrics=null;state.lyricSrc=null;state.onlineTrying=false;
   renderLyric();
+  if(s&&((s.title&&s.title.trim())||(s.artist&&s.artist.trim()))){
+    state.onlineTrying=true;renderLyric();
+    const txt=await fetchOnlineLyric(s.title,s.artist);
+    state.onlineTrying=false;
+    if(txt){await storePut('lyrics',{songId,text:txt});state.lyrics=parseLRC(txt);state.lyricSrc='online';}
+    renderLyric();
+  }
+}
+async function fetchOnlineLyric(title,artist){
+  const ac=typeof AbortController!=='undefined'?new AbortController():null;
+  const to=setTimeout(()=>ac&&ac.abort(),9000);
+  try{
+    const kw=encodeURIComponent(((title||'').trim())+(artist&&artist.trim()&&artist.trim()!=='未知艺术家'?' '+(artist.trim()):''));
+    if(!kw)return null;
+    const base='https://api.i-meto.com/meting/api';
+    const res=await fetch(base+'?server=netease&type=search&id='+kw,{signal:ac?ac.signal:undefined});
+    if(!res.ok)return null;
+    const arr=await res.json();
+    if(!Array.isArray(arr)||!arr.length)return null;
+    const t=(title||'').trim();
+    let best=null;
+    const nonCover=[...arr].filter(it=>!/cover/i.test((it.title||'')+' '+(it.author||'')));
+    for(const it of nonCover){
+      const itt=(it.title||'').trim();
+      if(itt===t||itt.startsWith(t)){best=it;break;}
+    }
+    if(!best)best=nonCover[0]||arr[0];
+    if(!best||!best.lrc)return null;
+    const r2=await fetch(best.lrc,{signal:ac?ac.signal:undefined});
+    if(!r2.ok)return null;
+    const txt=await r2.text();
+    if(!parseLRC(txt).items.length)return null;
+    return txt;
+  }catch(e){return null;}
+  finally{clearTimeout(to);}
 }
 audio.addEventListener('loadedmetadata',()=>{
   const s=state.songs[state.idx];if(s&&s.dur!==audio.duration){s.dur=audio.duration;storePut('songs',s);renderList();}
@@ -440,7 +478,11 @@ function renderLyric(){
   const box=$('lyricBox');box.innerHTML='';
   const ly=state.lyrics;
   if(!ly||!ly.items.length){
-    box.innerHTML=`<div class="ly ly-empty">暂无歌词。返回曲库，点歌曲右侧“编辑”，<br>为它添加 .lrc 歌词即可同步显示。</div>`;
+    if(state.onlineTrying){
+      box.innerHTML=`<div class="ly ly-empty"><span class="ly-spin"></span>正在联网搜索歌词…</div>`;
+    }else{
+      box.innerHTML=`<div class="ly ly-empty">暂无歌词（联网未找到或离线）。<br>可回曲库点歌曲“编辑”手动添加 .lrc 歌词。</div>`;
+    }
     return;
   }
   const p=document.createElement('div');p.className='ly ly-prev';

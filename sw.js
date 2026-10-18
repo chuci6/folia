@@ -1,5 +1,5 @@
 /* Folia PWA service worker: cache the app shell for offline use. */
-const CACHE = 'folia-v3';
+const CACHE = 'folia-v4';
 const SHELL = [
   './',
   './index.html',

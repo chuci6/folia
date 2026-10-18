@@ -369,6 +369,15 @@ function renderList(){
   list.querySelectorAll('.song-edit').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();openEdit(+b.dataset.i);}));
   updateMini();
 }
+function updateMini(){
+  const s=state.songs[state.idx];
+  if(!s){$('miniBar').classList.add('hidden');return;}
+  $('miniTitle').textContent=s.title||'未命名';
+  $('miniArtist').textContent=s.artist||'未知艺术家';
+  $('miniBar').classList.remove('hidden');
+  const cv=coverUrl(s);
+  $('miniCover').src=cv||''; $('miniCover').style.display=cv?'':'none';
+}
 
 /* ============ 播放 ============ */
 const audio=$('audio');
